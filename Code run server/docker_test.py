@@ -12,10 +12,15 @@ class DockerContainer:
 
 	def create_containers(self,no_containers):
 		try:
-			image = self.client.images.get('run-code-container')
+			# Check if run-code-image exists
+			image = self.client.images.get('run-code-image')
 		except docker.errors.ImageNotFound:
+			print("run-code-image not found")
 			try:
-				image = self.client.images.build(path = "./")
+				print("Trying to build image please wait..")
+				image,log = self.client.images.build(path = "./",tag="run-code-image",quiet=False)
+				# for line in log:
+				# 	print(line)
 			except:
 				print("Docker build error")
 				exit(0)
@@ -26,11 +31,12 @@ class DockerContainer:
 
 		mount_path= {os.getcwd():{'bind': '/tmp', 'mode': 'ro'}}
 
+		# Create containers if not present 
 		for c_no in range(no_containers):
 			c_name = "Alpha-Code-Container%d"%(c_no)
 			if len(self.client.containers.list(all=True,
 				   filters={"name":c_name})) == 0:
-				container = self.client.containers.create('run-code-container',
+				container = self.client.containers.create('run-code-image',
 							volumes=mount_path,stdin_open = True
 							, tty = True, working_dir="/root",
 							detach=True,mem_limit='50M',
@@ -54,37 +60,39 @@ class DockerContainer:
 	def stop_all(self):
 		for index,container in enumerate(self.containers):
 			print("Stoping Container %d"%(index+1))
-			container.stop(timeout=2)
+			container.stop(timeout=0)
 			# container.remove(force=True)
 			print("Container %d stopped"%(index+1))
 
 
 	def run_file(self,container,fname):
 		name, ext = fname.split('.')
-		if(ext == 'py'):
-			command = ['sh', '-c', 'cat %s.inp | timeout 3 python3 %s'%(name, fname)]
-			print(command)
-		elif(ext == 'c'):
+		if ext == 'py':
+			command = ['sh', '-c', 'timeout 3 python3 %s < %s.inp'%(fname,name)]
+		elif ext == 'c':
 			command	= ['sh', '-c', 'gcc %s && (cat %s.inp | timeout 3 ./a.out)'%(fname,name)]
-			print(command)
+
 		resgen = container.exec_run(cmd=command,workdir="/tmp/tempFiles/",stream=True)
 		#return res.output.decode()
 		res = ''
-		for i in resgen.output:
-			res = res + i.decode() + '\n'
 
-		return res
+		for i in resgen.output:
+			res += i.decode() 
+
+		return res[:4000]
 
 	def allocate_container(self,fname):
-		TIMEOUT = 10
+		TIMEOUT = 5
 		container = self.available_containers.pop(0)
 		with concurrent.futures.ThreadPoolExecutor() as executor:
 			future = executor.submit(self.run_file,container,fname)
 			try:
 				output = future.result(timeout=TIMEOUT)
 			except:
+				print("No reponse from container %s.\nKilling..."%(container.name))
 				output = "Time limit Exceeded"
-				container.stop(timeout=2)
+				container.stop(timeout=0)
+				print("Starting container %s"%(container.name))
 				container.start()
 
 		self.available_containers.append(container)
